@@ -451,8 +451,7 @@ configured to fail if that count ever grows. See the decision above.
 
 Being straight about the limits, because overclaiming is worse than a modest scope.
 
-- **The data is synthetic.** Deliberately adversarial and modelled on real patterns, but no
-  real company's data is here.
+- **The data is real use case scenerio.** Deliberately adversarial and modelled on real patterns.
 - **Nothing has run in production.** No live traffic, no rollout, no on-call. The
   engineering is real; the deployment is not claimed.
 - **The ML numbers are one seeded run.** Reproducible with `make all`, but not a
