@@ -31,7 +31,7 @@ that catches the two failure classes its own 70 tests structurally cannot.
 
 </div>
 
----
+
 
 ## The problem, in plain language
 
@@ -49,7 +49,7 @@ whether the same warehouse code means the same warehouse.
 Do it by hand and you get a number. It just isn't the right number, and **nothing tells you
 that.**
 
----
+
 
 ## Why silent failure is the whole problem
 
@@ -71,7 +71,7 @@ on it.
 **Nine more traps like this are engineered into the data on purpose.** Clean synthetic data
 proves nothing — anyone can model tidy inputs.
 
----
+
 
 ## What is actually in here
 
@@ -136,7 +136,7 @@ flowchart TB
 
 </details>
 
----
+
 
 ## The finding worth your time
 
@@ -159,7 +159,7 @@ The honest conclusion is not "ML wins". It is:
 > **Rules for absolute violations, models for contextual ones.**
 > Knowing which is which — and publishing the case where ML loses — is the actual skill.
 
----
+
 
 ## Why one is easy and one is impossible
 
@@ -177,7 +177,7 @@ maintaining 900 hand-written thresholds is not a plan.
 **Verified, not assumed:** after injecting 162 of these anomalies, **all 70 existing dbt
 tests still passed.** The blind spot is real, not manufactured.
 
----
+
 
 ## Choosing a threshold, which is where most write-ups stop
 
@@ -215,7 +215,7 @@ them is how teams discard models that were working.
 
 </details>
 
----
+
 
 ## The blind spot no row-level test can cover
 
@@ -261,7 +261,7 @@ Tuesdays.
 
 </details>
 
----
+
 
 ## The ten engineered traps
 
@@ -282,7 +282,7 @@ Each is one I have hit on real multi-company ERP consolidation work. Each is **s
 
 Full write-up with symptom, cause and fix for each: **[docs/data-traps.md](docs/data-traps.md)**
 
----
+
 
 ## Decisions worth defending
 
@@ -376,7 +376,7 @@ silent fix.
 
 Sixteen more, plus four mistakes: **[docs/decision-log.md](docs/decision-log.md)**
 
----
+
 
 ## Run it
 
@@ -408,7 +408,7 @@ dependencies, if you only want to see the dimensional model.
 Expected output, troubleshooting and verification queries:
 **[docs/runbook.md](docs/runbook.md)**
 
----
+
 
 ## By the numbers
 
@@ -429,7 +429,7 @@ Expected output, troubleshooting and verification queries:
 The single `WARN` is intentional — it reports the nine known source duplicates and is
 configured to fail if that count ever grows. See the decision above.
 
----
+
 
 ## Skills this demonstrates
 
@@ -445,7 +445,7 @@ configured to fail if that count ever grows. See the decision above.
 | Engineering judgement | Scoping ML to where it earns its place, and publishing the case where it loses |
 | Communication | A 12-page report, six documents, and every figure regenerated from live output |
 
----
+
 
 ## What this is not
 
@@ -464,7 +464,7 @@ Being straight about the limits, because overclaiming is worse than a modest sco
   deliberate scope decision, documented in
   [architecture.md](docs/architecture.md#what-is-deliberately-not-here).
 
----
+
 
 <div align="center">
 
@@ -472,7 +472,6 @@ Being straight about the limits, because overclaiming is worse than a modest sco
 
 Built by **Sagar Kumar Mishra** · [MIT licensed](LICENSE)
 
-Every figure and metric on this page was generated from a single run.
-Nothing is pasted, nothing is typed twice.
+
 
 </div>
