@@ -1,0 +1,88 @@
+version: 2
+
+sources:
+  - name: raw
+    description: >
+      Raw landing layer. One table per source extract, loaded one-for-one with no
+      transformation applied. This layer exists so that when a number is disputed we can
+      prove what the source actually said, separately from what the warehouse did with it.
+      Nothing here is cleaned, renamed or filtered.
+    schema: raw
+    # DuckDB and Snowflake resolve the database differently; dbt handles it per target.
+    tables:
+      - name: entity
+        description: >
+          Company master. Deliberately named ENTITY, which is a reserved word in several
+          engines -- an unquoted loader fails on it. Renaming the table would have been
+          the easy fix and the wrong one, because it permanently breaks traceability back
+          to source. The loader quotes the identifier instead.
+        columns:
+          - name: company_code
+            description: Numeric company code, used as the company key throughout.
+            tests: [not_null, unique]
+          - name: stores_utc
+            description: >
+              1 if this subsidiary's source system stores timestamps in UTC, 0 if it
+              already stores local time. Drives every timezone decision in the model.
+            tests:
+              - not_null
+              - accepted_values: {values: [0, 1]}
+
+      - name: item_master
+        description: Item master from the group product catalogue.
+        columns:
+          - name: item_code
+            tests: [not_null, unique]
+
+      - name: warehouse_master
+        description: Warehouses per subsidiary.
+
+      - name: cost_component_master
+        description: Cost component reference -- labour, material, tool, overhead.
+
+      - name: work_centre_master
+        description: Work centres, for the two manufacturing subsidiaries only.
+
+      - name: inventory_cost_txn
+        description: >
+          Inventory transaction cost. The most defect-prone table in the project.
+          txn_timestamp is unique to the second and line_seq does not restart per day,
+          so a grain built on the truncated date collapses distinct transactions. Also
+          contains a small number of corrupt quantities, some epoch timestamps, and nine
+          genuine duplicate rows for one subsidiary.
+        columns:
+          - name: quantity
+            description: >
+              Transaction quantity. A handful of rows are corrupt. Do NOT derive cost as
+              quantity * unit_cost -- use total_amount, which the source records correctly.
+          - name: total_amount
+            description: Amount as recorded by the source. This is the trustworthy measure.
+
+      - name: time_entries_modern
+        description: >
+          Time and attendance from the modern ERP subsidiaries. Stores UTC. work_hours is
+          booked in SECONDS on a minority of manufacturing rows, with the unit in
+          hours_unit -- nothing about the values reveals it.
+        columns:
+          - name: hours_unit
+            description: HR or SEC. Must be read before summing work_hours.
+            tests:
+              - accepted_values: {values: ["HR", "SEC"]}
+
+      - name: time_entries_legacy
+        description: >
+          Time entries from the legacy accounting and workshop subsidiaries. Stores LOCAL
+          time, uses different column names, and has no unit, work centre or delete flag
+          column at all. The union layer reconciles the difference.
+
+      - name: work_orders
+        description: >
+          Work order headers. Open orders carry the epoch rather than NULL in
+          completion_timestamp, and a small share have a completion date before the order
+          date, which yields a negative lead time.
+
+      - name: production_operations
+        description: >
+          Production order operations with planned hours and cost. A meaningful share are
+          planned but never booked, which a naive variance calculation reports as exactly
+          -100%.

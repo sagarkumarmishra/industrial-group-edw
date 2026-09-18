@@ -1,0 +1,19 @@
+# Monitoring layer only. The warehouse builds and passes all 70 tests without any of these,
+# so anyone who only wants to see the dimensional model can skip this file entirely.
+#
+# Install with:  pip install -r requirements-ml.txt
+
+# Detection and metrics.
+scikit-learn>=1.4
+
+# Charts. Uses the Agg backend, so it works headless.
+matplotlib>=3.8
+
+# Pulled in by scikit-learn, pinned here because the robust statistics rely on it.
+scipy>=1.11
+
+# PDF report generation.
+reportlab>=4.0
+
+# Image sizing when embedding figures into the PDF.
+pillow>=10.0

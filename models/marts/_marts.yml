@@ -1,0 +1,455 @@
+version: 2
+
+models:
+
+  # ------------------------------------------------------------------ dimensions
+  - name: dim_company
+    description: >
+      Conformed company dimension. Every fact joins to this, which is what makes
+      group-level reporting possible. Carries stores_utc, the flag driving every timezone
+      decision in the project.
+    columns:
+      - name: company_key
+        description: Surrogate and natural key. -1 is the unknown member.
+        tests: [not_null, unique]
+      - name: company_name
+        description: Full legal name of the subsidiary, for reporting labels.
+      - name: company_short_code
+        description: Three-letter code used in source extracts and operational reports.
+      - name: source_system
+        description: >
+          Which ERP this subsidiary runs. Drives the timezone and unit decisions in staging,
+          so it is carried into the mart rather than discarded.
+      - name: stores_utc
+        description: >
+          1 where the source system records timestamps in UTC, 0 where it records local
+          time. The single most consequential flag in the project -- see trap 1.
+        tests:
+          - not_null
+          - accepted_values: {values: [0, 1]}
+      - name: local_timezone
+        description: IANA timezone this subsidiary reports in, e.g. Europe/Oslo.
+      - name: is_manufacturing
+        description: >
+          1 for the two subsidiaries that run production orders. Only these appear in the
+          labour variance fact.
+
+  - name: dim_service_module
+    description: >
+      The discriminator separating field service, workshop repair, manufacturing and
+      leave. Queries against any fact carrying this key should group by or filter on it,
+      or they risk mixing operationally different businesses into one meaningless number.
+    columns:
+      - name: service_module_key
+        description: Surrogate key. -1 is the unknown member.
+        tests: [not_null, unique]
+      - name: service_module_code
+        description: Stable code safe to filter on in downstream logic.
+        tests:
+          - not_null
+          - accepted_values:
+              values: [FIELD_SERVICE, DEPOT_REPAIR, MANUFACTURING, GENERAL_LEAVE, UNKNOWN]
+      - name: description
+        description: Human-readable label for report axes.
+
+  - name: dim_item
+    description: >
+      Part master, conformed across all six subsidiaries. standard_cost is the anchor the
+      ML layer compares each transaction's unit cost against.
+    columns:
+      - name: item_key
+        description: Surrogate key. -1 is the unknown member.
+        tests: [not_null, unique]
+      - name: item_code
+        description: Natural key, trimmed. Arrives fixed-width padded from source -- trap 6.
+        tests: [not_null, unique]
+      - name: item_description
+        description: Free-text part description from the item master.
+      - name: item_family
+        description: Product family grouping, trimmed. Useful for roll-ups.
+      - name: unit_of_measure
+        description: EA, M or KG. Applies to quantity, not to the labour hours columns.
+      - name: standard_cost
+        description: >
+          Expected cost per unit for this part. The reference point for contextual price
+          anomaly detection -- a unit_cost far from this is suspicious for THIS item even
+          when the absolute value is unremarkable.
+
+  - name: dim_warehouse
+    description: >
+      Keyed on company AND warehouse code, because codes are only unique within a
+      subsidiary -- every company has a warehouse called MAIN.
+    columns:
+      - name: warehouse_key
+        description: Surrogate key over (company, warehouse code). -1 is the unknown member.
+        tests: [not_null, unique]
+      - name: company_key
+        description: >
+          Part of the natural key, not just a reference. A warehouse code alone does not
+          identify a warehouse anywhere in this group.
+      - name: warehouse_code
+        description: Source code, trimmed. Not unique on its own.
+      - name: warehouse_description
+        description: Human-readable location name.
+      - name: is_wip
+        description: 1 for work-in-progress locations, which behave differently in costing.
+
+  - name: dim_cost_component
+    description: >
+      Cost breakdown category -- material, labour, overhead, subcontract. Summing a fact
+      across all components without grouping double-counts nothing, but mixing one
+      component's totals with another's is a common reporting error.
+    columns:
+      - name: cost_component_key
+        description: Surrogate key. -1 is the unknown member.
+        tests: [not_null, unique]
+      - name: cost_component_code
+        description: Source code, trimmed.
+      - name: cost_component_name
+        description: Human-readable label.
+
+  - name: dim_date
+    description: Generated date spine. Deliberately excludes the epoch.
+    columns:
+      - name: date_key
+        description: Integer key in YYYYMMDD form. Facts carry NULL where no date is known.
+        tests: [not_null, unique]
+      - name: calendar_date
+        description: The date itself.
+        tests: [not_null, unique]
+      - name: calendar_year
+        description: Calendar year.
+      - name: calendar_quarter
+        description: Calendar quarter, 1 to 4.
+      - name: calendar_month
+        description: Calendar month, 1 to 12.
+      - name: day_of_month
+        description: Day of month, 1 to 31.
+      - name: fiscal_year
+        description: >
+          Fiscal year on an April start. Differs from calendar_year for January to March,
+          which is a routine source of reconciliation disputes.
+      - name: fiscal_period
+        description: Fiscal period 1 to 12, where period 1 is April.
+      - name: is_working_day
+        description: >
+          0 at weekends. Holidays are NOT excluded -- six countries means six holiday
+          calendars, and inventing one would be worse than being explicit about the gap.
+
+  # ------------------------------------------------------------------ facts
+  - name: fct_inventory_transaction_cost
+    description: >
+      Inventory cost per transaction. The grain INCLUDES txn_timestamp -- see the model
+      header for why truncating it to a date collapses distinct transactions.
+    tests:
+      # The test that would have caught the real 325,318-duplicate defect immediately.
+      #
+      # It does NOT expect zero, and that is deliberate. Nine rows are genuine duplicates
+      # in the source extract for Rauma Service Partners -- the same row sent twice, not a
+      # modelling error. Deduplicating them here would hide a real upstream problem and
+      # make the fact disagree with source on row count.
+      #
+      # So the known, explained baseline is encoded in the test:
+      #   warn_if  >0   -- surface it on every run, so nobody forgets it exists
+      #   error_if >9   -- fail the build the moment it gets worse than the known figure
+      #
+      # This is the difference between a test that passes and a test that is meaningful.
+      # An assertion of zero would have been quietly disabled by the third person who hit
+      # it; an assertion of "no worse than the nine we have documented" is a real
+      # regression guard.
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - company_key
+            - item_key
+            - warehouse_key
+            - cost_component_key
+            - txn_timestamp
+            - line_seq
+          name: inventory_cost_grain_is_unique_with_timestamp
+          config:
+            severity: warn
+            warn_if: ">0"
+            error_if: ">9"
+    columns:
+      - name: company_key
+        description: Which subsidiary booked the transaction.
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_company')
+              field: company_key
+      - name: item_key
+        description: Resolved part. -1 where the source code matched no item master row.
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_item')
+              field: item_key
+      - name: warehouse_key
+        description: Resolved warehouse, keyed on company and code together.
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_warehouse')
+              field: warehouse_key
+      - name: cost_component_key
+        description: Cost category this line belongs to.
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_cost_component')
+              field: cost_component_key
+      - name: txn_timestamp
+        description: >
+          Full timestamp at second precision, converted to the company's reporting
+          timezone. Part of the grain -- truncating it loses rows.
+      - name: line_seq
+        description: >
+          Source line sequence. Does NOT restart per day, which is exactly why the grain
+          cannot be built on a truncated date -- trap 3.
+      - name: txn_date_key
+        description: Null where the source carried the epoch, which is correct.
+        tests:
+          - relationships:
+              to: ref('dim_date')
+              field: date_key
+      - name: source_item_code
+        description: >
+          Original code as received, retained for reconciliation against the source
+          system. Trimmed but not otherwise altered.
+      - name: source_warehouse_code
+        description: Original warehouse code as received, retained for reconciliation.
+      - name: source_cost_component_code
+        description: Original cost component code as received, retained for reconciliation.
+      - name: quantity
+        description: >
+          Units moved. A small number of rows carry absurd values -- see
+          is_quantity_reliable rather than filtering on a magic number yourself.
+      - name: unit_cost
+        description: >
+          Cost per unit as recorded. Plausible in isolation even when wrong for the item,
+          which is the basis of trap 10 and the reason the ML layer exists.
+      - name: transaction_amount
+        description: From source. Never recomputed as quantity * unit_cost.
+        tests: [not_null]
+      - name: amount_if_recomputed
+        description: >
+          quantity * unit_cost, provided ONLY to make the corrupt-quantity problem visible.
+          Do not report on this column. It is excluded from ML features as label leakage,
+          because it becomes astronomic exactly when quantity is corrupt.
+      - name: is_quantity_reliable
+        description: >
+          0 where quantity exceeds 1e6 and is therefore not usable. Exact, and excluded
+          from ML features for the same leakage reason -- it IS the rule output.
+        tests:
+          - accepted_values: {values: [0, 1]}
+      - name: is_wip
+        description: 1 where the line hit a work-in-progress location.
+      - name: is_deleted
+        description: Soft-delete flag from source. Filter on this in any reporting query.
+      - name: is_item_unresolved
+        description: >
+          1 where item_key fell back to the unknown member. A count of these is the
+          honest measure of master data quality.
+      - name: is_warehouse_unresolved
+        description: 1 where warehouse_key fell back to the unknown member.
+
+  - name: fct_labour_hours
+    description: >
+      Every labour booking across all six subsidiaries and four source systems, with
+      seconds-booked rows converted to hours upstream.
+    columns:
+      - name: labour_hours_key
+        description: Surrogate key for the booking.
+        tests: [not_null]
+      - name: company_key
+        description: Which subsidiary booked the time.
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_company')
+              field: company_key
+      - name: service_module_key
+        description: >
+          Field service, depot repair, manufacturing or leave. Grouping by this is
+          essential -- these are operationally different businesses.
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_service_module')
+              field: service_module_key
+      - name: booked_date_key
+        description: Null where the source carried the epoch.
+        tests:
+          - relationships:
+              to: ref('dim_date')
+              field: date_key
+      - name: employee_code
+        description: Who booked the time. Trimmed.
+      - name: order_no
+        description: Work order or production order the time was booked against.
+      - name: operation_seq
+        description: Routing step within the order, where the source provides one.
+      - name: work_centre_code
+        description: Work centre, for manufacturing bookings.
+      - name: booked_at
+        description: >
+          Timestamp of the booking in the company's reporting timezone. Legacy sources
+          carry a date only -- check has_time_of_day before using the time component.
+      - name: work_hours
+        description: Always hours, never seconds. See stg_time_entries_modern.
+        tests: [not_null]
+      - name: hourly_rate
+        description: Labour rate applied to this booking.
+      - name: labour_cost
+        description: work_hours * hourly_rate, computed after unit conversion.
+      - name: is_productive
+        description: 0 for leave and non-chargeable time. Excluding this inflates utilisation.
+      - name: source_system
+        description: Which extract this booking came from.
+        tests:
+          - accepted_values: {values: [MODERN_ERP, LEGACY]}
+      - name: source_hours_unit
+        description: >
+          HOURS or SECONDS, as stated by the source. The column that makes trap 2
+          solvable, and the one that is easy to overlook.
+      - name: work_hours_as_sourced
+        description: >
+          The raw value before unit conversion, retained deliberately. Summing this column
+          overstates labour by up to 192x for the affected companies -- which is what makes
+          the trap demonstrable rather than merely described.
+      - name: was_unit_converted
+        description: 1 where a seconds-to-hours conversion was applied to this row.
+      - name: has_time_of_day
+        description: 0 for legacy sources, which carry a date only. A real limitation.
+        tests:
+          - accepted_values: {values: [0, 1]}
+      - name: is_deleted
+        description: Soft-delete flag from source.
+
+  - name: fct_work_order_lead_time
+    description: >
+      Order-to-completion lead time per work order. Negative lead times exist in the
+      source and are flagged rather than silently dropped.
+    columns:
+      - name: work_order_key
+        description: Surrogate key for the work order.
+        tests: [not_null, unique]
+      - name: company_key
+        description: Which subsidiary raised the order.
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_company')
+              field: company_key
+      - name: service_module_key
+        description: Which line of business the order belongs to.
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_service_module')
+              field: service_module_key
+      - name: ordered_date_key
+        description: Date the order was raised.
+      - name: completed_date_key
+        description: Null for open orders, where the source carries the epoch.
+      - name: order_no
+        description: Source order number, trimmed.
+      - name: customer_code
+        description: Customer the order was raised for.
+      - name: order_status
+        description: Source status code. See is_closed for the derived interpretation.
+      - name: ordered_at
+        description: Order timestamp in the company's reporting timezone.
+      - name: completed_at
+        description: Completion timestamp, NULL for open orders.
+      - name: estimated_value
+        description: Estimated order value from source.
+      - name: lead_time_days
+        description: >
+          Raw difference between order and completion. Can be NEGATIVE, because the source
+          genuinely contains completion dates before order dates. Use lead_time_days_clean
+          for any average.
+      - name: lead_time_days_clean
+        description: >
+          Null where the raw lead time is negative, so an AVG over this column ignores
+          implausible rows without every consumer having to remember a filter.
+      - name: is_closed
+        description: 1 where the order has reached a completed status.
+      - name: is_lead_time_plausible
+        description: 0 where lead_time_days is negative. Count these to size the problem.
+        tests:
+          - accepted_values: {values: [0, 1]}
+      - name: is_deleted
+        description: Soft-delete flag from source.
+      - name: is_open
+        description: 1 where the order is still open and therefore has no completion date.
+
+  - name: fct_labour_hours_variance
+    description: >
+      Planned versus actual production hours. hours_variance_pct is NULL rather than
+      -100% where nothing was booked -- see the model header.
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [company_key, production_order, operation_seq]
+          name: labour_variance_grain_is_unique
+    columns:
+      - name: labour_variance_key
+        description: Surrogate key at the operation grain.
+        tests: [not_null, unique]
+      - name: company_key
+        description: One of the two manufacturing subsidiaries.
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_company')
+              field: company_key
+      - name: ordered_date_key
+        description: Date the production order was raised.
+      - name: production_order
+        description: Production order number, trimmed.
+      - name: operation_seq
+        description: Routing step. Part of the grain.
+      - name: work_centre_code
+        description: Work centre the operation is planned at.
+      - name: operation_status
+        description: Source status code for the routing step.
+      - name: planned_hours
+        description: Planned hours for the operation.
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+              inclusive: false
+      - name: planned_amount
+        description: Planned cost for the operation.
+      - name: actual_hours
+        description: >
+          Booked hours, aggregated to the operation grain BEFORE this join. Aggregating
+          after would fan out planned_hours once per booking.
+      - name: actual_amount
+        description: Booked cost, aggregated to the operation grain.
+      - name: booking_count
+        description: >
+          How many labour bookings rolled into actual_hours. 0 means planned but never
+          worked, which is why the variance percentage must be NULL.
+      - name: has_actual_booking
+        description: 0 where the operation was planned but never booked against.
+        tests:
+          - accepted_values: {values: [0, 1]}
+      - name: hours_variance
+        description: actual_hours - planned_hours. Positive means overrun.
+      - name: amount_variance
+        description: actual_amount - planned_amount.
+      - name: hours_variance_pct
+        description: >
+          NULL where nothing was booked, NOT -100%. A fake -100% reads as "we used no
+          hours" rather than "this has not been worked yet", and drags every average down.
+      - name: amount_variance_pct
+        description: NULL where nothing was booked, for the same reason.
+      - name: is_variance_reliable
+        description: >
+          0 where the variance should not be reported -- no booking, or planned hours of
+          zero. Filter on this rather than reinventing the logic per query.
+        tests:
+          - accepted_values: {values: [0, 1]}

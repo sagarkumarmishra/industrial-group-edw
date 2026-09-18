@@ -1,0 +1,32 @@
+# dbt connection profiles.
+#
+# DuckDB is the default so the project runs with no account, no credentials and no cost.
+# The Snowflake target reads everything from environment variables -- there are no
+# secrets in this repository and there never should be.
+#
+#   dbt build                       -> DuckDB   (default)
+#   dbt build --target snowflake    -> Snowflake
+
+industrial_group_edw:
+  target: dev
+
+  outputs:
+    dev:
+      type: duckdb
+      path: "data/edw.duckdb"
+      threads: 4
+      # Keep the raw schema visible to dbt sources.
+      schema: main
+
+    snowflake:
+      type: snowflake
+      account: "{{ env_var('SNOWFLAKE_ACCOUNT') }}"
+      user: "{{ env_var('SNOWFLAKE_USER') }}"
+      password: "{{ env_var('SNOWFLAKE_PASSWORD', '') }}"
+      authenticator: "{{ env_var('SNOWFLAKE_AUTHENTICATOR', 'snowflake') }}"
+      role: "{{ env_var('SNOWFLAKE_ROLE') }}"
+      warehouse: "{{ env_var('SNOWFLAKE_WAREHOUSE') }}"
+      database: "{{ env_var('SNOWFLAKE_DATABASE', 'DEMO_EDW') }}"
+      schema: "{{ env_var('SNOWFLAKE_SCHEMA', 'DBT') }}"
+      threads: 8
+      client_session_keep_alive: false

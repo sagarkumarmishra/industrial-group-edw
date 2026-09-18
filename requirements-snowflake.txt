@@ -1,0 +1,4 @@
+﻿# Optional -- only needed to run against the Snowflake target.
+-r requirements.txt
+dbt-snowflake>=1.8,<2.0
+snowflake-connector-python[pandas]>=3.0
